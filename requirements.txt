@@ -1,5 +1,6 @@
 streamlit
 SpeechRecognition
-PyAudio
-pocketsphinx
+streamlit-webrtc
+av
+numpy
 python-dotenv

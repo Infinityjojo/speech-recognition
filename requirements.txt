@@ -1,8 +1,6 @@
 streamlit
 SpeechRecognition
-streamlit-webrtc
-av
-numpy
-python-dotenv
 pydub
 st-audiorec
+av
+numpy

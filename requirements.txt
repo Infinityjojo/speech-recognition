@@ -5,3 +5,4 @@ av
 numpy
 python-dotenv
 pydub
+st-audiorec

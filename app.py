@@ -4,21 +4,12 @@ import io
 from datetime import datetime
 
 # =====================================================
-# MUST be first Streamlit call
+# Streamlit config (MUST be first)
 # =====================================================
 st.set_page_config(
-    page_title="Voice Transcription",
+    page_title="Speech Recognition",
     page_icon="🎙️"
 )
-
-# =====================================================
-# Import browser recorder
-# =====================================================
-try:
-    from st_audiorec import st_audiorec
-except Exception:
-    st.error("st-audiorec is not installed")
-    st.stop()
 
 # =====================================================
 # Language options
@@ -35,13 +26,13 @@ LANGUAGES = {
 }
 
 # =====================================================
-# Transcription function (NO conversion)
+# Transcription function
 # =====================================================
-def transcribe_wav_bytes(wav_bytes: bytes, language: str) -> str:
+def transcribe_audio(file_bytes: bytes, language: str) -> str:
     recognizer = sr.Recognizer()
 
     try:
-        with sr.AudioFile(io.BytesIO(wav_bytes)) as source:
+        with sr.AudioFile(io.BytesIO(file_bytes)) as source:
             audio = recognizer.record(source)
 
         return recognizer.recognize_google(audio, language=language)
@@ -56,29 +47,37 @@ def transcribe_wav_bytes(wav_bytes: bytes, language: str) -> str:
 # =====================================================
 # UI
 # =====================================================
-st.title("🎙️ Browser Voice Transcription")
+st.title("🎙️ Speech Recognition (Cloud-Safe)")
 st.write(
-    "Record your voice in the browser and transcribe it using "
-    "Google Speech Recognition (no API key required)."
+    "Upload an audio file (WAV recommended) and transcribe it using "
+    "Google Speech Recognition — no API key required."
 )
 
 with st.sidebar:
     st.header("⚙️ Settings")
     language_name = st.selectbox("Language", list(LANGUAGES.keys()))
     language_code = LANGUAGES[language_name]
-    st.success("Cloud-safe mode enabled")
+    st.success("Fully supported on Streamlit Cloud")
 
-st.subheader("🎤 Record")
-audio_bytes = st_audiorec()
+# =====================================================
+# File uploader
+# =====================================================
+uploaded_file = st.file_uploader(
+    "📤 Upload an audio file",
+    type=["wav", "mp3", "m4a"]
+)
 
-if audio_bytes:
-    st.audio(audio_bytes, format="audio/wav")
+if uploaded_file:
+    st.audio(uploaded_file)
 
     if st.button("📝 Transcribe"):
         with st.spinner("Transcribing..."):
-            text = transcribe_wav_bytes(audio_bytes, language_code)
+            text = transcribe_audio(uploaded_file.read(), language_code)
             st.session_state["text"] = text
 
+# =====================================================
+# Output
+# =====================================================
 if "text" in st.session_state:
     st.subheader("📝 Transcription")
     st.text_area("Result", st.session_state["text"], height=180)
@@ -86,7 +85,7 @@ if "text" in st.session_state:
     filename = f"transcription_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
 
     st.download_button(
-        "⬇️ Download text",
+        "⬇️ Download transcription",
         st.session_state["text"],
         file_name=filename,
         mime="text/plain"

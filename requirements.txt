@@ -4,3 +4,4 @@ streamlit-webrtc
 av
 numpy
 python-dotenv
+pydub

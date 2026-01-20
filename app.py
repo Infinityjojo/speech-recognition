@@ -3,17 +3,15 @@ import speech_recognition as sr
 import os
 from datetime import datetime
 import time
+import threading
+from streamlit.runtime.scriptrunner import add_script_run_ctx
 
-# Available speech recognition APIs
+# Restrict to only Google's free Speech Recognition API
 API_OPTIONS = {
-    "Google Speech Recognition": "google",
-    "Sphinx (Offline)": "sphinx",
-    "Wit.ai": "wit",
-    "Microsoft Bing Voice Recognition": "bing",
-    "IBM Speech to Text": "ibm"
+    "Google Speech Recognition (Free)": "google"
 }
 
-# Available languages (Google API supports many languages)
+# Supported languages for Google API
 LANGUAGE_OPTIONS = {
     "English (US)": "en-US",
     "English (UK)": "en-GB",
@@ -30,53 +28,73 @@ LANGUAGE_OPTIONS = {
     "Russian": "ru-RU"
 }
 
+def init_session_state():
+    """Initialize session state variables for recording and transcription"""
+    if 'recognizer' not in st.session_state:
+        try:
+            st.session_state.recognizer = sr.Recognizer()
+            st.session_state.microphone = sr.Microphone()
+        except OSError:
+            st.session_state.microphone_error = "No microphone detected. Please connect a microphone and refresh the page."
+            return
+    
+    if 'recording' not in st.session_state:
+        st.session_state.recording = False
+    if 'pause_recording' not in st.session_state:
+        st.session_state.pause_recording = False
+    if 'transcribed_text' not in st.session_state:
+        st.session_state.transcribed_text = ""
+    if 'listening_thread' not in st.session_state:
+        st.session_state.listening_thread = None
+    if 'error_msg' not in st.session_state:
+        st.session_state.error_msg = ""
 
-def transcribe_speech(api_choice, language_code, timeout=5, phrase_time_limit=5):
-    """
-    Transcribe speech using the selected API and language
-    """
-    r = sr.Recognizer()
+def listen_continuous(language_code, timeout, phrase_limit):
+    """Continuous listening function to run in background thread"""
+    recognizer = st.session_state.recognizer
+    microphone = st.session_state.microphone
 
-    try:
-        with sr.Microphone() as source:
-            st.info("🔊 Calibrating microphone for ambient noise...")
-            r.adjust_for_ambient_noise(source, duration=1)
-            st.info("🎤 Speak now...")
-            audio_text = r.listen(source, timeout=timeout, phrase_time_limit=phrase_time_limit)
-            st.info("📝 Transcribing...")
-
-        text = ""
-
-        if api_choice == "google":
-            text = r.recognize_google(audio_text, language=language_code)
-        elif api_choice == "sphinx":
-            text = r.recognize_sphinx(audio_text)
-        elif api_choice == "wit":
-            # Wit.ai requires API key - you'd need to set WIT_AI_KEY environment variable
-            text = r.recognize_wit(audio_text, key=os.getenv("WIT_AI_KEY"))
-        elif api_choice == "bing":
-            # Bing requires API key
-            text = r.recognize_bing(audio_text, key=os.getenv("BING_KEY"))
-        elif api_choice == "ibm":
-            # IBM requires username and password
-            text = r.recognize_ibm(audio_text, username=os.getenv("IBM_USERNAME"), password=os.getenv("IBM_PASSWORD"))
-
-        return text
-
-    except sr.WaitTimeoutError:
-        return "❌ Listening timeout: No speech detected within the time limit."
-    except sr.UnknownValueError:
-        return "❌ Sorry, I could not understand the audio. Please speak more clearly."
-    except sr.RequestError as e:
-        return f"❌ API Error: {str(e)}. Please check your internet connection and API credentials."
-    except Exception as e:
-        return f"❌ Unexpected error: {str(e)}"
-
+    # Calibrate for ambient noise once at start
+    with microphone as source:
+        recognizer.adjust_for_ambient_noise(source, duration=1)
+    
+    while st.session_state.recording:
+        # Skip if paused
+        if st.session_state.pause_recording:
+            time.sleep(0.5)
+            continue
+        
+        try:
+            with microphone as source:
+                audio = recognizer.listen(
+                    source,
+                    timeout=timeout,
+                    phrase_time_limit=phrase_limit
+                )
+            
+            # Transcribe using Google Speech Recognition
+            text = recognizer.recognize_google(audio, language=language_code)
+            if text:
+                st.session_state.transcribed_text += text + " "
+        
+        except sr.WaitTimeoutError:
+            # No speech detected in timeout window, keep listening
+            continue
+        except sr.UnknownValueError:
+            st.session_state.transcribed_text += "[Unintelligible] "
+        except sr.RequestError as e:
+            st.session_state.error_msg = f"Google API Error: {str(e)}. Check your internet connection."
+            st.session_state.recording = False
+            break
+        except Exception as e:
+            st.session_state.error_msg = f"Unexpected error: {str(e)}"
+            st.session_state.recording = False
+            break
+        
+        time.sleep(0.1)  # Reduce CPU usage
 
 def save_text_to_file(text, filename=None):
-    """
-    Save transcribed text to a file
-    """
+    """Save transcribed text to a UTF-8 encoded file"""
     if filename is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"transcription_{timestamp}.txt"
@@ -88,148 +106,123 @@ def save_text_to_file(text, filename=None):
     except Exception as e:
         return f"Error saving file: {str(e)}", False
 
-
 def main():
-    st.set_page_config(page_title="Enhanced Speech Recognition", page_icon="🎙️")
+    st.set_page_config(page_title="Google Speech Transcriber", page_icon="🎙️")
+    st.title("🎙️ Google Free Speech Transcriber")
+    st.write("Convert speech to text using Google's free Speech Recognition API")
 
-    st.title("🎙️ Enhanced Speech Recognition App")
-    st.write("Convert your speech to text with multiple recognition options")
+    # Initialize session state
+    init_session_state()
 
-    # Sidebar for configuration
+    # Handle microphone error
+    if 'microphone_error' in st.session_state:
+        st.error(st.session_state.microphone_error)
+        return
+
+    # Sidebar configuration
     with st.sidebar:
-        st.header("⚙️ Configuration")
-
-        # API selection
-        api_display = st.selectbox(
-            "Select Speech Recognition API",
-            options=list(API_OPTIONS.keys()),
-            index=0,
-            help="Choose which speech recognition service to use"
-        )
-        api_choice = API_OPTIONS[api_display]
-
+        st.header("⚙️ Settings")
+        
         # Language selection
         language_display = st.selectbox(
             "Select Language",
             options=list(LANGUAGE_OPTIONS.keys()),
             index=0,
-            help="Select the language you'll be speaking in"
+            help="Choose the language you will speak in"
         )
         language_code = LANGUAGE_OPTIONS[language_display]
 
-        # Recording settings
-        st.subheader("Recording Settings")
-        timeout = st.slider("Listening timeout (seconds)", 1, 15, 5)
-        phrase_limit = st.slider("Maximum phrase length (seconds)", 1, 10, 5)
-
-        # API key info
-        if api_choice in ["wit", "bing", "ibm"]:
-            st.warning(f"⚠️ {api_display} requires API credentials. Set environment variables: ")
-            if api_choice == "wit":
-                st.code("WIT_AI_KEY=your_api_key_here")
-            elif api_choice == "bing":
-                st.code("BING_KEY=your_api_key_here")
-            elif api_choice == "ibm":
-                st.code("IBM_USERNAME=your_username\nIBM_PASSWORD=your_password")
+        # Recording parameters
+        st.subheader("Recording Parameters")
+        timeout = st.slider("Listening Timeout (seconds)", 1, 10, 3)
+        phrase_limit = st.slider("Max Phrase Length (seconds)", 1, 15, 5)
 
     # Main content area
-    col1, col2 = st.columns([3, 1])
+    col1, col2 = st.columns([3,1])
 
     with col1:
-        # Recording controls
-        if 'recording' not in st.session_state:
-            st.session_state.recording = False
-        if 'transcribed_text' not in st.session_state:
-            st.session_state.transcribed_text = ""
-        if 'pause_recording' not in st.session_state:
-            st.session_state.pause_recording = False
-
-        # Recording buttons
+        # Recording control buttons
         col_btn1, col_btn2, col_btn3 = st.columns(3)
 
         with col_btn1:
             if not st.session_state.recording:
                 if st.button("🎙️ Start Recording", type="primary", use_container_width=True):
                     st.session_state.recording = True
-                    st.session_state.pause_recording = False
-                    st.rerun()
+                    st.session_state.error_msg = ""
+                    # Start background listening thread
+                    listen_thread = threading.Thread(
+                        target=listen_continuous,
+                        args=(language_code, timeout, phrase_limit),
+                        daemon=True
+                    )
+                    add_script_run_ctx(listen_thread)
+                    st.session_state.listening_thread = listen_thread
+                    listen_thread.start()
             else:
                 if st.button("⏹️ Stop Recording", use_container_width=True):
                     st.session_state.recording = False
-                    st.rerun()
+                    st.session_state.pause_recording = False
 
         with col_btn2:
             if st.session_state.recording:
                 if st.session_state.pause_recording:
                     if st.button("▶️ Resume", use_container_width=True):
                         st.session_state.pause_recording = False
-                        st.rerun()
                 else:
                     if st.button("⏸️ Pause", use_container_width=True):
                         st.session_state.pause_recording = True
-                        st.rerun()
 
         with col_btn3:
             if st.session_state.transcribed_text:
-                if st.button("🗑️ Clear", use_container_width=True):
+                if st.button("🗑️ Clear Text", use_container_width=True):
                     st.session_state.transcribed_text = ""
-                    st.rerun()
+                    st.session_state.error_msg = ""
 
-        # Recording status
+        # Display recording status
         if st.session_state.recording:
             if st.session_state.pause_recording:
                 st.warning("⏸️ Recording paused. Click Resume to continue.")
             else:
-                st.success("🔴 Recording in progress...")
-                with st.spinner("Listening..."):
-                    # Simulate recording process (in a real app, you'd handle this differently)
-                    time.sleep(2)
-                    if not st.session_state.pause_recording:
-                        text = transcribe_speech(api_choice, language_code, timeout, phrase_limit)
-                        if text and not text.startswith("❌"):
-                            st.session_state.transcribed_text += text + " "
-                        st.rerun()
-        else:
-            st.info("💡 Click Start Recording to begin")
+                st.success("🔴 Recording in progress... Speak clearly into your microphone.")
+        
+        # Display error messages
+        if st.session_state.error_msg:
+            st.error(st.session_state.error_msg)
 
     # Display transcribed text
     if st.session_state.transcribed_text:
         st.subheader("📝 Transcription")
-        transcribed_text_area = st.text_area(
+        text_area = st.text_area(
             "Transcribed Text",
             value=st.session_state.transcribed_text,
-            height=200,
+            height=250,
             key="transcription_display"
         )
 
-        # Save to file option
-        col_save1, col_save2 = st.columns(2)
-
-        with col_save1:
-            custom_filename = st.text_input("Custom filename (optional)", "transcription.txt")
-
-        with col_save2:
+        # Save and copy options
+        col_save, col_copy = st.columns(2)
+        
+        with col_save:
+            custom_filename = st.text_input("Custom Filename", f"transcription_{datetime.now().strftime('%Y%m%d')}.txt")
             if st.button("💾 Save to File", use_container_width=True):
                 filename, success = save_text_to_file(st.session_state.transcribed_text, custom_filename)
                 if success:
-                    st.success(f"✅ Text saved to {filename}")
+                    st.success(f"✅ Saved to {os.path.abspath(filename)}")
                 else:
                     st.error(filename)
+        
+        with col_copy:
+            if st.button("📋 Copy to Clipboard", use_container_width=True):
+                st.code(st.session_state.transcribed_text)
+                st.success("✅ Text copied to clipboard!")
 
-        # Copy to clipboard
-        if st.button("📋 Copy to Clipboard", use_container_width=True):
-            st.code(st.session_state.transcribed_text)
-            st.success("✅ Text copied to clipboard!")
-
-    # Error handling display
-    if st.session_state.transcribed_text and st.session_state.transcribed_text.startswith("❌"):
-        st.error(st.session_state.transcribed_text)
-        st.info("💡 Tips for better recognition:")
-        st.write("- Speak clearly and at a moderate pace")
-        st.write("- Reduce background noise")
-        st.write("- Use a good quality microphone")
-        st.write("- Check your internet connection (for online APIs)")
-
+    # Tips section
+    with st.expander("💡 Tips for Better Transcription"):
+        st.write("- Use a high-quality microphone (headset mics work best)")
+        st.write("- Speak clearly at a moderate pace")
+        st.write("- Reduce background noise (close windows, turn off fans)")
+        st.write("- Ensure stable internet connection (required for Google API)")
+        st.write("- Speak in complete phrases for better accuracy")
 
 if __name__ == "__main__":
     main()

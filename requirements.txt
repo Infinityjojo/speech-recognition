@@ -1,6 +1,5 @@
-streamlit
-SpeechRecognition
-pydub
-st-audiorec
-av
+streamlit==1.31.1
+SpeechRecognition==3.10.0
+pydub==0.25.1
+st-audiorec==0.1.5
 numpy
